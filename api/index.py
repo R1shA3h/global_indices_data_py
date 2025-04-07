@@ -474,20 +474,29 @@ def index():
         'description': 'API to scrape global indices data from Groww website',
         'endpoints': {
             '/api/scrape': 'Scrape the Groww website and return the data',
+            '/api/data': 'Get data from MongoDB with option to scrape fresh data first',
             '/api/healthcheck': 'Health check endpoint'
         },
         'parameters': {
             'selenium': 'true/false - Whether to use Selenium (default: false)',
             'store_db': 'true/false - Whether to store in MongoDB (default: true)',
             'limit': 'Number of records to keep in MongoDB (default: 100)',
-            'use_limit': 'true/false - Whether to limit records (default: true)'
+            'use_limit': 'true/false - Whether to limit records (default: true)',
+            'scrape_first': 'true/false - Whether to scrape fresh data before returning results (default: true)'
         }
     })
 
 @app.route('/api/data', methods=['GET'])
 def get_data():
-    """API endpoint to fetch stored data."""
+    """API endpoint to fetch stored data with option to scrape fresh data first."""
     try:
+        # Get parameters from query string
+        scrape_first = request.args.get('scrape_first', 'true').lower() == 'true'
+        use_selenium = request.args.get('selenium', 'false').lower() == 'true'
+        store_in_db = request.args.get('store_db', 'true').lower() == 'true'
+        limit = int(request.args.get('limit', '100'))
+        use_limit = request.args.get('use_limit', 'true').lower() == 'true'
+        
         # MongoDB configuration
         mongodb_uri = os.environ.get('MONGODB_URI', 'mongodb+srv://dbusername:dbpassword@cluster0.sethv79.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0')
         mongodb_db = os.environ.get('MONGODB_DB', 'test')
@@ -496,31 +505,44 @@ def get_data():
         # Connect to MongoDB
         mongodb_client, collection = connect_to_mongodb(mongodb_uri, mongodb_db, mongodb_collection)
         
-        if collection is not None:
-            # Fetch data, sort by timestamp descending
-            cursor = collection.find({}, {'_id': 0}).sort('timestamp', -1)
-            data = list(cursor)
-            
-            # Convert datetime objects to ISO format strings for JSON serialization
-            for item in data:
-                if 'timestamp' in item and isinstance(item['timestamp'], datetime):
-                    item['timestamp'] = item['timestamp'].isoformat()
-            
-            # Close MongoDB connection
-            if mongodb_client is not None:
-                mongodb_client.close()
-            
+        if collection is None:
             return jsonify({
-                'success': True,
-                'count': len(data),
-                'data': data
-            })
+                'success': False,
+                'message': 'Failed to connect to MongoDB',
+                'data': []
+            }), 500
+        
+        # Scrape fresh data if requested
+        if scrape_first:
+            logger.info("Scraping fresh data before returning results")
+            indices_data = scrape_groww_global_indices(use_selenium=use_selenium)
+            
+            if store_in_db and indices_data:
+                store_data_in_mongodb(
+                    indices_data, 
+                    collection, 
+                    use_limit=use_limit, 
+                    limit=limit
+                )
+        
+        # Fetch data from MongoDB, sort by timestamp descending
+        cursor = collection.find({}, {'_id': 0}).sort('timestamp', -1)
+        data = list(cursor)
+        
+        # Convert datetime objects to ISO format strings for JSON serialization
+        for item in data:
+            if 'timestamp' in item and isinstance(item['timestamp'], datetime):
+                item['timestamp'] = item['timestamp'].isoformat()
+        
+        # Close MongoDB connection
+        if mongodb_client is not None:
+            mongodb_client.close()
         
         return jsonify({
-            'success': False,
-            'message': 'Failed to connect to MongoDB',
-            'data': []
-        }), 500
+            'success': True,
+            'count': len(data),
+            'data': data
+        })
     
     except Exception as e:
         logger.error(f"Data retrieval error: {e}")
