@@ -279,10 +279,12 @@ def process_json_data(data):
                 if isinstance(index, dict):
                     index_data = {
                         'name': index.get('name', ''),
-                        'symbol': index.get('symbol', ''),
-                        'country': index.get('country', ''),
-                        'price': index.get('price', index.get('ltp', '')),
                         'change': index.get('change', index.get('absoluteChange', '')),
+                        # Add new fields
+                        'high': index.get('high', index.get('dayHigh', '')),
+                        'low': index.get('low', index.get('dayLow', '')),
+                        'open': index.get('open', index.get('openPrice', '')),
+                        'prev_close': index.get('prevClose', index.get('previousClose', '')),
                         # 'change_percent' field removed as requested
                         'timestamp': index.get('timestamp', datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
                     }
@@ -307,28 +309,42 @@ def extract_from_html(soup):
         
         # If we find headers that look like indices table, process it
         if any(kw in ' '.join(header_texts) for kw in ['index', 'price', 'change']):
+            # Map header position to field name
+            header_map = {}
+            for i, header in enumerate(header_texts):
+                if 'index' in header or 'name' in header:
+                    header_map['name'] = i
+                elif 'price' in header or 'value' in header or 'ltp' in header:
+                    header_map['price'] = i  # Keep mapping but don't use in result
+                elif 'change' in header and 'percent' not in header:
+                    header_map['change'] = i
+                elif 'high' in header or 'day high' in header:
+                    header_map['high'] = i
+                elif 'low' in header or 'day low' in header:
+                    header_map['low'] = i
+                elif 'open' in header or 'opening' in header:
+                    header_map['open'] = i
+                elif 'prev' in header or 'previous' in header or 'close' in header:
+                    header_map['prev_close'] = i
+            
             for row in rows[1:]:  # Skip header row
                 cells = row.find_all('td')
-                if len(cells) >= 4:  # Ensure we have enough cells
+                if len(cells) >= 3:  # Ensure we have enough cells
                     # Try to extract data
-                    name_cell = cells[0]
-                    price_cell = cells[1] if len(cells) > 1 else None
-                    change_cell = cells[2] if len(cells) > 2 else None
+                    name_cell = cells[header_map.get('name', 0)]
                     
                     # Extract the name (might be in a child element)
                     name_element = name_cell.find('div') or name_cell
                     name = name_element.text.strip()
                     
-                    # Extract symbol if available (often in a separate element)
-                    symbol_element = name_cell.find('span')
-                    symbol = symbol_element.text.strip() if symbol_element else ''
-                    
                     # Create data record
                     index_data = {
                         'name': name,
-                        'symbol': symbol,
-                        'price': price_cell.text.strip() if price_cell else '',
-                        'change': change_cell.text.strip() if change_cell else '',
+                        'change': cells[header_map.get('change', 2)].text.strip() if 'change' in header_map and header_map['change'] < len(cells) else '',
+                        'high': cells[header_map.get('high', 0)].text.strip() if 'high' in header_map and header_map['high'] < len(cells) else '',
+                        'low': cells[header_map.get('low', 0)].text.strip() if 'low' in header_map and header_map['low'] < len(cells) else '',
+                        'open': cells[header_map.get('open', 0)].text.strip() if 'open' in header_map and header_map['open'] < len(cells) else '',
+                        'prev_close': cells[header_map.get('prev_close', 0)].text.strip() if 'prev_close' in header_map and header_map['prev_close'] < len(cells) else '',
                         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     }
                     indices_data.append(index_data)
@@ -339,15 +355,21 @@ def extract_from_html(soup):
         index_rows = soup.select('div.index-row, div.table-row, div.list-item')
         for row in index_rows:
             name_elem = row.select_one('.name, .index-name, .title')
-            price_elem = row.select_one('.price, .value, .ltp')
+            price_elem = row.select_one('.price, .value, .ltp')  # Still select but don't use
             change_elem = row.select_one('.change, .absolute-change')
+            high_elem = row.select_one('.high, .day-high')
+            low_elem = row.select_one('.low, .day-low')
+            open_elem = row.select_one('.open, .open-price')
+            prev_close_elem = row.select_one('.prev-close, .previous-close, .prev-day')
             
             if name_elem:
                 index_data = {
                     'name': name_elem.text.strip(),
-                    'symbol': '',  # May need more complex extraction
-                    'price': price_elem.text.strip() if price_elem else '',
                     'change': change_elem.text.strip() if change_elem else '',
+                    'high': high_elem.text.strip() if high_elem else '',
+                    'low': low_elem.text.strip() if low_elem else '',
+                    'open': open_elem.text.strip() if open_elem else '',
+                    'prev_close': prev_close_elem.text.strip() if prev_close_elem else '',
                     'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 }
                 indices_data.append(index_data)
@@ -437,6 +459,16 @@ def api_scrape():
                     use_limit=use_limit, 
                     limit=limit
                 )
+                
+                # Fetch the data from MongoDB to ensure we're not returning data with ObjectId
+                # This ensures we get the data with proper JSON serialization
+                cursor = mongodb_collection_obj.find({}, {'_id': 0})
+                indices_data = list(cursor)
+                
+                # Convert datetime objects to ISO format strings for JSON serialization
+                for item in indices_data:
+                    if 'timestamp' in item and isinstance(item['timestamp'], datetime):
+                        item['timestamp'] = item['timestamp'].isoformat()
                 
                 # Close MongoDB connection
                 if mongodb_client is not None:
@@ -550,6 +582,58 @@ def get_data():
             'success': False,
             'message': f"Error: {str(e)}",
             'data': []
+        }), 500
+
+@app.route('/api/raw_data', methods=['GET'])
+def api_raw_data():
+    """API endpoint to get raw unfiltered data from Groww website without storing in database."""
+    try:
+        # Get parameter from query string
+        use_selenium = request.args.get('selenium', 'false').lower() == 'true'
+        
+        # Try to fetch data directly from the API first
+        raw_data = fetch_from_api()
+        
+        # If API didn't work, try fetching the page
+        if not raw_data:
+            page_content = None
+            if use_selenium:
+                page_content = fetch_with_selenium()
+            
+            if not page_content:
+                page_content = fetch_with_requests()
+            
+            if not page_content:
+                return jsonify({
+                    'success': False,
+                    'message': 'Failed to fetch page content',
+                    'data': None
+                }), 500
+            
+            # Parse the page content
+            soup = BeautifulSoup(page_content, 'html.parser')
+            
+            # Try to extract data from script tags
+            raw_data = extract_from_script_tags(soup)
+            
+            # If no script data, return text content
+            if not raw_data:
+                raw_data = {
+                    'html_content': soup.get_text(),
+                    'html_structure': str(soup)[:10000] + '...' if len(str(soup)) > 10000 else str(soup)
+                }
+        
+        return jsonify({
+            'success': True,
+            'message': 'Successfully retrieved raw data',
+            'data': raw_data
+        })
+    except Exception as e:
+        logger.error(f"Raw data API error: {e}")
+        return jsonify({
+            'success': False,
+            'message': f"Error: {str(e)}",
+            'data': None
         }), 500
 
 # For local testing
