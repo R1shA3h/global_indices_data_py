@@ -277,8 +277,14 @@ def process_json_data(data):
         if indices_list and isinstance(indices_list, list):
             for index in indices_list:
                 if isinstance(index, dict):
+                    # Skip Dow Futures data
+                    name = index.get('name', '')
+                    if 'Dow Futures' in name:
+                        logger.info(f"Skipping Dow Futures: {name}")
+                        continue
+                        
                     index_data = {
-                        'name': index.get('name', ''),
+                        'name': name,
                         'change': index.get('change', index.get('absoluteChange', '')),
                         # Add new fields
                         'high': index.get('high', index.get('dayHigh', '')),
@@ -337,6 +343,11 @@ def extract_from_html(soup):
                     name_element = name_cell.find('div') or name_cell
                     name = name_element.text.strip()
                     
+                    # Skip Dow Futures data
+                    if 'Dow Futures' in name:
+                        logger.info(f"Skipping Dow Futures: {name}")
+                        continue
+                    
                     # Create data record
                     index_data = {
                         'name': name,
@@ -363,8 +374,15 @@ def extract_from_html(soup):
             prev_close_elem = row.select_one('.prev-close, .previous-close, .prev-day')
             
             if name_elem:
+                name = name_elem.text.strip()
+                
+                # Skip Dow Futures data
+                if 'Dow Futures' in name:
+                    logger.info(f"Skipping Dow Futures: {name}")
+                    continue
+                
                 index_data = {
-                    'name': name_elem.text.strip(),
+                    'name': name,
                     'change': change_elem.text.strip() if change_elem else '',
                     'high': high_elem.text.strip() if high_elem else '',
                     'low': low_elem.text.strip() if low_elem else '',
@@ -392,6 +410,8 @@ def scrape_groww_global_indices(use_selenium=False):
         indices_data = process_json_data(data)
         if indices_data:
             logger.info(f"Successfully extracted {len(indices_data)} indices from API")
+            # Final filter to remove any Dow Futures data that might have slipped through
+            indices_data = [index for index in indices_data if 'Dow Futures' not in index.get('name', '')]
             return indices_data
     
     # If API didn't work, try fetching the page
@@ -415,12 +435,16 @@ def scrape_groww_global_indices(use_selenium=False):
         indices_data = process_json_data(data)
         if indices_data:
             logger.info(f"Successfully extracted {len(indices_data)} indices from script tags")
+            # Final filter to remove any Dow Futures data that might have slipped through
+            indices_data = [index for index in indices_data if 'Dow Futures' not in index.get('name', '')]
             return indices_data
     
     # Last resort - extract from HTML
     indices_data = extract_from_html(soup)
     if indices_data:
         logger.info(f"Successfully extracted {len(indices_data)} indices from HTML")
+        # Final filter to remove any Dow Futures data that might have slipped through
+        indices_data = [index for index in indices_data if 'Dow Futures' not in index.get('name', '')]
         return indices_data
     
     logger.error("No indices data found")
