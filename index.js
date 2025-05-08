@@ -60,13 +60,22 @@ async function fetchWithRetry(url, attempts = 3, delayMs = 1000) {
 let CloseModel;
 if (!isTestMode) {
   mongoose.connect(process.env.MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true });
-  const closeSchema = new mongoose.Schema({
-    index: String,
-    date: Date,
-    close: Number
-  });
-  CloseModel = mongoose.model('global_indices_historical_data', closeSchema);
-  console.log(`Connected to MongoDB Atlas`);
+  
+  // Create schema with options to hide __v field
+  const closeSchema = new mongoose.Schema(
+    {
+      index: String,
+      date: Date,
+      close: Number
+    },
+    { 
+      versionKey: false // This removes the __v field completely
+    }
+  );
+  // Define collection name explicitly to prevent pluralization
+  const collectionName = 'global_indices_historical_data';
+  CloseModel = mongoose.model('GlobalIndicesData', closeSchema, collectionName);
+  console.log(`Connected to MongoDB Atlas using collection: ${collectionName}`);
 } else {
   console.log(`MongoDB connection skipped in test mode`);
 }
@@ -312,7 +321,15 @@ if (!isTestMode) {
     }
   });
   
-  app.listen(3000, () => console.log('HTTP API listening on port 3000'));
+  app.listen(3000, () => {
+    console.log('HTTP API listening on port 3000');
+    
+    // Send ready signal to PM2
+    if (process.send) {
+      process.send('ready');
+      console.log('Ready signal sent to PM2');
+    }
+  });
 } else {
   // In test mode, just run once and exit
   (async () => {
