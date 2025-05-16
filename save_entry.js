@@ -12,17 +12,6 @@ process.env.TZ = 'Asia/Kolkata';
 const axios = require('axios');
 const mongoose = require('mongoose');
 const moment = require('moment-timezone');
-const Holidays = require('date-holidays');
-
-// Holiday calendar for relevant markets
-const hdIN = new Holidays('IN');
-const hdUS = new Holidays('US');
-const hdJP = new Holidays('JP');
-const hdGB = new Holidays('GB');
-const hdHK = new Holidays('HK');
-const hdDE = new Holidays('DE');
-const hdFR = new Holidays('FR');
-const hdKR = new Holidays('KR');
 
 // Verify required environment variables
 if (!process.env.MONGODB_URI) {
@@ -82,18 +71,18 @@ console.log(`Using collection: ${collectionName}`);
 // Create the model with explicit collection name to prevent pluralization
 const CloseModel = mongoose.model('GlobalIndicesData', closeSchema, collectionName);
 
-// Index definitions (key must match API name prefix)
+// Update indices array to remove holidayCalendar
 const indices = [
-  { key: 'gift-nifty', label: 'GIFT NIFTY', holidayCalendar: hdIN },
-  { key: 'dow',        label: 'Dow',        holidayCalendar: hdUS },
-  { key: 'nasdaq',     label: 'NASDAQ',     holidayCalendar: hdUS },
-  { key: 'sandp',      label: 'S&P',        holidayCalendar: hdUS },
-  { key: 'nikkei',     label: 'NIKKEI',     holidayCalendar: hdJP },
-  { key: 'hang',       label: 'HANG SENG',  holidayCalendar: hdHK },
-  { key: 'dax',        label: 'DAX',        holidayCalendar: hdDE },
-  { key: 'cac',        label: 'CAC',        holidayCalendar: hdFR },
-  { key: 'ftse',       label: 'FTSE 100',   holidayCalendar: hdGB },
-  { key: 'kospi',      label: 'KOSPI',      holidayCalendar: hdKR }
+  { key: 'gift-nifty', label: 'GIFT NIFTY' },
+  { key: 'dow',        label: 'Dow' },
+  { key: 'nasdaq',     label: 'NASDAQ' },
+  { key: 'sandp',      label: 'S&P' },
+  { key: 'nikkei',     label: 'NIKKEI' },
+  { key: 'hang',       label: 'HANG SENG' },
+  { key: 'dax',        label: 'DAX' },
+  { key: 'cac',        label: 'CAC' },
+  { key: 'ftse',       label: 'FTSE 100' },
+  { key: 'kospi',      label: 'KOSPI' }
 ];
 
 // Improved function to find an entry in the API data
@@ -165,21 +154,13 @@ async function saveEntry() {
     let savedCount = 0;
     
     // Process each index
-    for (const { key, label, holidayCalendar } of indices) {
+    for (const { key, label } of indices) {
       const entry = findEntry(apiData, label);
       if (!entry) {
         console.warn(`${label}: Not found in API response`);
         continue;
       }
-      
       console.log(`Processing ${label}: ${entry.prev_close}`);
-      
-      // Skip if holiday (check previous day)
-      if (holidayCalendar.isHoliday(yesterday.toDate())) {
-        console.log(`${label} trading day ${yesterday.format('YYYY-MM-DD')} is a holiday, skipping.`);
-        continue;
-      }
-      
       // Parse close price robustly
       const raw = entry.prev_close;
       const parsed = parseFloat(raw.replace(/[^0-9.]/g, ''));
@@ -188,32 +169,20 @@ async function saveEntry() {
         continue;
       }
       const closeVal = parsed;
-      
-      // Check for duplicates
+      // Fetch the most recent DB entry for this index
       const last = await CloseModel.findOne({ index: key }).sort({ date: -1 });
-      if (last) {
-        console.log(`Found latest entry for ${key}: date=${last.date.toISOString()}, close=${last.close}`);
-        if (last.date.toISOString().split('T')[0] === prevISODate.split('T')[0] && 
-            last.close === closeVal) {
-          console.log(`${key} unchanged on ${prevISODate.split('T')[0]}, skipping.`);
-          continue;
-        }
-      } else {
-        console.log(`No previous entries found for ${key}`);
+      if (last && last.close === closeVal) {
+        console.log(`${key} unchanged from previous value ${last.close} (last recorded on ${last.date.toISOString().split('T')[0]}), skipping.`);
+        continue;
       }
-      
-      // Create Date object for storage
+      // Only insert if close is different from the most recent entry
       const dateForStorage = new Date(prevISODate);
-      
-      // Create document and save it
       const newEntry = new CloseModel({
         index: key,
         date: dateForStorage,
         close: closeVal
       });
-      
-      console.log(`Saving document: ${JSON.stringify(newEntry)}`);
-      
+      console.log(`Saving document: ${JSON.stringify(newEntry)} (previous value: ${last ? last.close : 'none'})`);
       try {
         const savedDoc = await newEntry.save();
         savedCount++;
@@ -222,14 +191,9 @@ async function saveEntry() {
         console.error(`Error saving ${key}: ${saveErr.message}`);
         continue;
       }
-      
       // Fetch and display the saved entry
       try {
-        const savedEntry = await CloseModel.findOne({ 
-          index: key,
-          date: dateForStorage
-        }).lean();
-        
+        const savedEntry = await CloseModel.findOne({ index: key, date: dateForStorage }).lean();
         if (savedEntry) {
           console.log(`\n=== SAVED ENTRY IN DATABASE ===`);
           console.log(JSON.stringify({

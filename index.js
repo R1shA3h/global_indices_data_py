@@ -16,21 +16,10 @@ const axios = require('axios');
 const mongoose = require('mongoose');
 const cron = require('node-cron');
 const moment = require('moment-timezone');
-const Holidays = require('date-holidays');
 
 // Check for test mode
 const isTestMode = process.argv.includes('--test');
 console.log(isTestMode ? 'RUNNING IN TEST MODE - No data will be saved to DB' : 'Running in normal mode');
-
-// Holiday calendar for relevant markets
-const hdIN = new Holidays('IN');
-const hdUS = new Holidays('US');
-const hdJP = new Holidays('JP');
-const hdGB = new Holidays('GB');
-const hdHK = new Holidays('HK');
-const hdDE = new Holidays('DE');
-const hdFR = new Holidays('FR');
-const hdKR = new Holidays('KR');
 
 // Verify required environment variables
 if (!process.env.MONGODB_URI) {
@@ -92,16 +81,16 @@ process.on('unhandledRejection', err => {
 
 // Index definitions (key must match API name prefix)
 const indices = [
-  { key: 'gift-nifty', label: 'GIFT NIFTY', holidayCalendar: hdIN },
-  { key: 'dow',        label: 'Dow',        holidayCalendar: hdUS },
-  { key: 'nasdaq',     label: 'NASDAQ',     holidayCalendar: hdUS },
-  { key: 'sandp',      label: 'S&P',        holidayCalendar: hdUS },
-  { key: 'nikkei',     label: 'NIKKEI',     holidayCalendar: hdJP },
-  { key: 'hang',       label: 'HANG SENG',  holidayCalendar: hdHK },
-  { key: 'dax',        label: 'DAX',        holidayCalendar: hdDE },
-  { key: 'cac',        label: 'CAC',        holidayCalendar: hdFR },
-  { key: 'ftse',       label: 'FTSE 100',   holidayCalendar: hdGB },
-  { key: 'kospi',      label: 'KOSPI',      holidayCalendar: hdKR }
+  { key: 'gift-nifty', label: 'GIFT NIFTY' },
+  { key: 'dow',        label: 'Dow' },
+  { key: 'nasdaq',     label: 'NASDAQ' },
+  { key: 'sandp',      label: 'S&P' },
+  { key: 'nikkei',     label: 'NIKKEI' },
+  { key: 'hang',       label: 'HANG SENG' },
+  { key: 'dax',        label: 'DAX' },
+  { key: 'cac',        label: 'CAC' },
+  { key: 'ftse',       label: 'FTSE 100' },
+  { key: 'kospi',      label: 'KOSPI' }
 ];
 
 // Improved function to find an entry in the API data
@@ -171,21 +160,13 @@ async function fetchAndStoreIndicesData() {
     const testModeRecords = [];
     
     // Process each index
-    for (const { key, label, holidayCalendar } of indices) {
+    for (const { key, label } of indices) {
       const entry = findEntry(apiData, label);
       if (!entry) {
         console.warn(`${label}: Not found in API response`);
         continue;
       }
-      
       console.log(`Processing ${label}: ${entry.prev_close}`);
-      
-      // Skip if holiday (check previous day)
-      if (holidayCalendar.isHoliday(yesterday.toDate())) {
-        console.log(`${label} trading day ${yesterday.format('YYYY-MM-DD')} is a holiday, skipping.`);
-        continue;
-      }
-      
       // Parse close price robustly
       const raw = entry.prev_close;
       const parsed = parseFloat(raw.replace(/[^0-9.]/g, ''));
@@ -194,40 +175,29 @@ async function fetchAndStoreIndicesData() {
         continue;
       }
       const closeVal = parsed;
-      
       if (!isTestMode) {
-        // Check for duplicates - only in normal mode
+        // Fetch the most recent DB entry for this index
         const last = await CloseModel.findOne({ index: key }).sort({ date: -1 });
-        if (last && 
-            last.date.toISOString().split('T')[0] === prevISODate.split('T')[0] && 
-            last.close === closeVal) {
-          console.log(`${key} unchanged on ${prevISODate.split('T')[0]}, skipping.`);
+        if (last && last.close === closeVal) {
+          console.log(`${key} unchanged from previous value ${last.close} (last recorded on ${last.date.toISOString().split('T')[0]}), skipping.`);
           continue;
         }
-        
-        // Create Date object just for storage
+        // Only insert if close is different from the most recent entry
         const dateForStorage = new Date(prevISODate);
-        
-        // Upsert document
         await CloseModel.updateOne(
           { index: key, date: dateForStorage },
           { $set: { close: closeVal } },
           { upsert: true }
         );
-        console.log(`Stored ${key} @ ${prevISODate} = ${closeVal}`);
+        console.log(`Stored ${key} @ ${prevISODate} = ${closeVal} (previous value: ${last ? last.close : 'none'})`);
       } else {
         // In test mode, just format and collect the data
         const mockRecord = {
-          _id: {
-            $oid: generateMockObjectId()
-          },
+          _id: { $oid: generateMockObjectId() },
           index: key,
-          date: {
-            $date: prevISODate
-          },
+          date: { $date: prevISODate },
           close: closeVal
         };
-        
         testModeRecords.push(mockRecord);
       }
     }
